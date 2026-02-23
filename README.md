@@ -59,4 +59,73 @@ If you see "Processed 0 images" or get no compression:
 
 ## WebAssembly (WASM)
 
-This project is also designed to be compiled to WebAssembly for use in the browser.
+This project can be compiled to WebAssembly for client-side use in the browser.
+
+### Building for Web
+
+You need `wasm-pack` installed:
+```bash
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+```
+
+Then build:
+```bash
+cd pdf-compressor-rust
+# For direct browser use (ES modules):
+wasm-pack build --target web
+# For bundlers (Webpack, Vite, Rollup):
+wasm-pack build --target bundler
+```
+
+### Usage (Direct Browser)
+
+If you built with `--target web`:
+
+```html
+<script type="module">
+  import init, { compress_pdf } from './pkg/pdf_compressor_rust.js';
+
+  async function run() {
+    await init();
+    
+    // Load your PDF as Uint8Array (e.g., from file input)
+    const fileInput = document.getElementById('file-input');
+    const file = fileInput.files[0];
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfBytes = new Uint8Array(arrayBuffer);
+
+    try {
+      // Compress: (input_bytes, quality_1_100, max_dimension)
+      const compressedBytes = compress_pdf(pdfBytes, 50, 1500);
+      
+      // Download or display compressedBytes
+      const blob = new Blob([compressedBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      window.open(url);
+    } catch (e) {
+      console.error("Compression failed:", e);
+    }
+  }
+</script>
+```
+
+### Usage (Bundlers / React / Vue)
+
+If you built with `--target bundler` and installed the package:
+
+```javascript
+import * as wasm from "pdf-compressor-rust";
+
+// Note: In some setups you might need to handle WASM loading asynchronously
+// or use a plugin like vite-plugin-wasm.
+
+const compress = (pdfBytes) => {
+    // quality=50, max_dim=1500
+    return wasm.compress_pdf(pdfBytes, 50, 1500);
+};
+```
+
+### CI/CD
+
+A GitHub Action is set up in `.github/workflows/wasm-release.yml` to automatically build and release the WASM package on every tag push (e.g., `v0.1.0`). It produces artifacts for both `web` and `bundler` targets.
+

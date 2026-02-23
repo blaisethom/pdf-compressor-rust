@@ -1,0 +1,64 @@
+name: Build and Release WASM
+
+on:
+  push:
+    branches: [ "main" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM (web target)
+        working-directory: ./pdf-compressor-rust
+        run: wasm-pack build --target web --release
+
+      - name: Build WASM (bundler target)
+        working-directory: ./pdf-compressor-rust
+        run: wasm-pack build --target bundler --release --out-dir pkg-bundler
+
+      - name: Create archive (web)
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: ./pdf-compressor-rust/pkg
+        run: tar -czf ../../pdf-compressor-wasm-web-${{ github.ref_name }}.tar.gz .
+
+      - name: Create archive (bundler)
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: ./pdf-compressor-rust/pkg-bundler
+        run: tar -czf ../../pdf-compressor-wasm-bundler-${{ github.ref_name }}.tar.gz .
+
+      - name: Upload Artifact (web)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package-web
+          path: pdf-compressor-rust/pkg/
+
+      - name: Upload Artifact (bundler)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package-bundler
+          path: pdf-compressor-rust/pkg-bundler/
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            pdf-compressor-wasm-web-${{ github.ref_name }}.tar.gz
+            pdf-compressor-wasm-bundler-${{ github.ref_name }}.tar.gz
