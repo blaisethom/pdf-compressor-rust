@@ -163,4 +163,3 @@ To use this library in a JavaScript project (Node.js, React, Vue, etc.):
     // Returns a Uint8Array of the compressed PDF
     const result = wasm.compress_pdf(myPdfUint8Array, 50, 1500);
     ```
-
