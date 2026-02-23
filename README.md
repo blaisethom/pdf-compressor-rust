@@ -125,9 +125,18 @@ const compress = (pdfBytes) => {
 };
 ```
 
-### CI/CD
+### CI/CD & NPM Publishing
 
-A GitHub Action is set up in `.github/workflows/wasm-release.yml` to automatically build and release the WASM package on every tag push (e.g., `v0.1.0`). It produces artifacts for both `web` and `bundler` targets.
+A GitHub Action is set up in `.github/workflows/wasm-release.yml` to automatically:
+1.  Build and release the WASM package on GitHub Releases on every tag push (e.g., `v0.1.0`).
+2.  Publish the package to the **public npm registry**.
+
+**Prerequisites for NPM Publishing:**
+1.  Create an account on [npmjs.com](https://www.npmjs.com/).
+2.  Generate an Automation Access Token (Classic).
+3.  Add it as a repository secret named `NPM_TOKEN` in your GitHub repo settings (Settings -> Secrets and variables -> Actions).
+4.  Ensure the `name` in `pdf-compressor-rust/Cargo.toml` is unique on npm. If `pdf-compressor-rust` is taken, change it (e.g., to `@your-username/pdf-compressor-rust`).
+5.  Ensure the `version` in `Cargo.toml` matches your git tag (e.g., `0.1.2`).
 
 ## Using with NPM
 
