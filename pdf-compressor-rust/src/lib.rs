@@ -274,6 +274,13 @@ pub fn process_image_object(
             let mask =
                 image::GrayImage::from_raw(mw, mh, mcontent).ok_or(anyhow!("Failed Mask"))?;
 
+            if debug {
+                let path = format!("debug_images/Image{}-mask-extracted.png", debug_index);
+                if let Err(e) = mask.save(&path) {
+                    eprintln!("Failed to save mask image {}: {:?}", path, e);
+                }
+            }
+
             // Convert main image to RGBA
             let mut rgba = img.to_rgba8();
 
@@ -333,6 +340,9 @@ pub fn process_image_object(
         encoder.encode(&rgb_pixels, w, h, ColorType::Rgb8.into())?;
 
         if let Some(Object::Stream(stream)) = doc.objects.get_mut(&object_id) {
+            stream
+                .dict
+                .set("Length", Object::Integer(buffer.len() as i64));
             stream.content = buffer;
             stream
                 .dict
@@ -344,6 +354,8 @@ pub fn process_image_object(
                 .set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
             stream.dict.remove(b"DecodeParms"); // Remove old params
+            stream.dict.remove(b"Decode"); // Remove potential Decode array
+                                           // stream.dict.remove(b"Length"); // Remove length so it is recalculated
         }
 
         // 2. Update Mask (Alpha + Flate)
@@ -353,6 +365,7 @@ pub fn process_image_object(
         let compressed_mask = encoder.finish()?;
 
         if let Some(Object::Stream(stream)) = doc.objects.get_mut(&smask_id) {
+            let mask_len = compressed_mask.len();
             stream.content = compressed_mask;
             stream
                 .dict
@@ -364,6 +377,10 @@ pub fn process_image_object(
                 .set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
             stream.dict.remove(b"DecodeParms");
+            // Ensure no Decode array is messing things up, or force default [0, 1]
+            stream.dict.remove(b"Decode");
+            // stream.dict.remove(b"Length"); // Remove length so it is recalculated
+            stream.dict.set("Length", Object::Integer(mask_len as i64));
         }
     } else {
         // No transparency (Opaque)
@@ -374,6 +391,9 @@ pub fn process_image_object(
 
         // Update the stream
         if let Some(Object::Stream(stream)) = doc.objects.get_mut(&object_id) {
+            stream
+                .dict
+                .set("Length", Object::Integer(buffer.len() as i64));
             stream.content = buffer;
             stream
                 .dict
@@ -385,6 +405,12 @@ pub fn process_image_object(
                 .set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
             stream.dict.remove(b"DecodeParms");
+            // stream.dict.remove(b"Length"); // Remove length so it is recalculated
+            println!(
+                "DEBUG: Image {} (opaque) has Length: {:?}",
+                object_id.0,
+                stream.dict.get(b"Length")
+            );
         }
     }
 
