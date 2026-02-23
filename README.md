@@ -129,3 +129,29 @@ const compress = (pdfBytes) => {
 
 A GitHub Action is set up in `.github/workflows/wasm-release.yml` to automatically build and release the WASM package on every tag push (e.g., `v0.1.0`). It produces artifacts for both `web` and `bundler` targets.
 
+## Using with NPM
+
+To use this library in a JavaScript project (Node.js, React, Vue, etc.):
+
+1.  **Build the package:**
+    ```bash
+    cd pdf-compressor-rust
+    wasm-pack build --target bundler
+    ```
+
+2.  **Install it in your JS project:**
+    You can install the package directly from the local directory:
+    ```bash
+    cd ../my-js-app
+    npm install ../pdf-compressor-rust/pkg
+    ```
+
+3.  **Import and use:**
+    ```javascript
+    import * as wasm from "pdf-compressor-rust";
+
+    // Usage: compress_pdf(pdf_bytes, quality, max_dimension)
+    // Returns a Uint8Array of the compressed PDF
+    const result = wasm.compress_pdf(myPdfUint8Array, 50, 1500);
+    ```
+
