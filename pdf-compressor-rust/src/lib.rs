@@ -37,7 +37,9 @@ pub fn process_image_object(
     object_id: (u32, u16),
     quality: u8,
     max_dim: u32,
-) -> Result<()> {
+    debug: bool,
+    debug_index: u32,
+) -> Result<String> {
     // Check for masks (transparency)
     let smask_id = {
         let stream = match doc.objects.get(&object_id) {
@@ -50,6 +52,8 @@ pub fn process_image_object(
             _ => None,
         }
     };
+
+    let mut actions = Vec::new();
 
     // Resolve Filter and DecodeParms if needed
     let resolved_filter = if let Some(Object::Stream(stream)) = doc.objects.get(&object_id) {
@@ -125,7 +129,7 @@ pub fn process_image_object(
     }
 
     // Extract the stream and decode it
-    let (width, height, components, content, _color_space_name) = {
+    let (width, height, components, content, color_space_name) = {
         let stream = match doc.objects.get_mut(&object_id) {
             Some(Object::Stream(s)) => s,
             _ => return Err(anyhow!("Object not a stream")),
@@ -143,6 +147,10 @@ pub fn process_image_object(
             }),
             _ => false,
         };
+
+        if is_jpeg {
+            actions.push("was JPEG".to_string());
+        }
 
         let content = if is_jpeg {
             match stream.decompressed_content() {
@@ -207,6 +215,7 @@ pub fn process_image_object(
                     .ok_or(anyhow!("Failed RGB"))?,
             ),
             4 => {
+                actions.push("CMYK->RGB".to_string());
                 if let Ok(img) = image::load_from_memory(&content) {
                     img
                 } else {
@@ -238,8 +247,16 @@ pub fn process_image_object(
         }
     };
 
+    if debug {
+        let path = format!("debug_images/Image{}-before.png", debug_index);
+        if let Err(e) = img.save(&path) {
+            eprintln!("Failed to save debug image {}: {:?}", path, e);
+        }
+    }
+
     // Handle SMask (Transparency)
     if let Some(smask_id) = smask_id {
+        actions.push("applied SMask".to_string());
         let (mw, mh, mcontent) = {
             let stream = match doc.objects.get(&smask_id) {
                 Some(Object::Stream(s)) => s,
@@ -272,15 +289,30 @@ pub fn process_image_object(
 
     // Resize
     let img = if img.width() > max_dim || img.height() > max_dim {
-        img.resize(max_dim, max_dim, FilterType::Lanczos3)
+        actions.push(format!("resize {}x{} -> ", img.width(), img.height()));
+        let new_img = img.resize(max_dim, max_dim, FilterType::Lanczos3);
+        actions
+            .last_mut()
+            .unwrap()
+            .push_str(&format!("{}x{}", new_img.width(), new_img.height()));
+        new_img
     } else {
+        actions.push(format!("keep dims {}x{}", img.width(), img.height()));
         img
     };
 
     let (w, h) = img.dimensions();
 
+    if debug {
+        let path = format!("debug_images/Image{}-after.jpg", debug_index);
+        if let Err(e) = img.save(&path) {
+            eprintln!("Failed to save debug image {}: {:?}", path, e);
+        }
+    }
+
     // Re-encode
     if let Some(smask_id) = smask_id {
+        actions.push("re-encode: Split RGB(JPEG) + Alpha(Flate)".to_string());
         // Has transparency. Split into RGB (JPEG) and Alpha (Flate)
         let rgba = img.to_rgba8();
 
@@ -335,6 +367,7 @@ pub fn process_image_object(
         }
     } else {
         // No transparency (Opaque)
+        actions.push(format!("re-encode: JPEG(q={})", quality));
         let mut buffer = Vec::new();
         let mut encoder = JpegEncoder::new_with_quality(&mut buffer, quality);
         encoder.encode_image(&img)?;
@@ -355,7 +388,7 @@ pub fn process_image_object(
         }
     }
 
-    Ok(())
+    Ok(actions.join(", "))
 }
 
 #[wasm_bindgen]
@@ -413,7 +446,7 @@ pub fn compress_pdf(input: &[u8], quality: u8, max_dim: u32) -> Result<Vec<u8>, 
                 processed_ids.insert(sid);
             }
 
-            if let Err(e) = process_image_object(&mut doc, object_id, quality, max_dim) {
+            if let Err(e) = process_image_object(&mut doc, object_id, quality, max_dim, false, 0) {
                 // web_sys::console::error_1(&format!("Failed to process image {}: {:?}", object_id.0, e).into());
             }
             processed_ids.insert(object_id);
