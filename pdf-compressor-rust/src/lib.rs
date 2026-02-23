@@ -418,7 +418,12 @@ pub fn process_image_object(
 }
 
 #[wasm_bindgen]
-pub fn compress_pdf(input: &[u8], quality: u8, max_dim: u32) -> Result<Vec<u8>, JsError> {
+pub fn compress_pdf(
+    input: &[u8],
+    quality: u8,
+    max_dim: u32,
+    on_progress: Option<js_sys::Function>,
+) -> Result<Vec<u8>, JsError> {
     // Initialize console_error_panic_hook for better error messages in browser console
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
@@ -438,44 +443,60 @@ pub fn compress_pdf(input: &[u8], quality: u8, max_dim: u32) -> Result<Vec<u8>, 
     let object_ids: Vec<_> = doc.objects.keys().cloned().collect();
     let mut processed_ids = std::collections::HashSet::new();
 
-    for object_id in object_ids {
+    // 1. First pass: Identify all images to get a total count
+    let mut image_objects = Vec::new();
+    for object_id in &object_ids {
+        if let Some(Object::Stream(stream)) = doc.objects.get(object_id) {
+            if let Ok(subtype) = stream.dict.get(b"Subtype") {
+                if let Ok(name) = subtype.as_name() {
+                    if name == b"Image" {
+                        let smask_id = match stream.dict.get(b"SMask") {
+                            Ok(Object::Reference(id)) => Some(*id),
+                            _ => None,
+                        };
+                        image_objects.push((*object_id, smask_id));
+                    }
+                }
+            }
+        }
+    }
+
+    // Filter out mask images from the main list so we don't double count progress
+    // (We only want to report progress on "main" images)
+    let mask_ids: std::collections::HashSet<_> = image_objects
+        .iter()
+        .filter_map(|(_, smask)| *smask)
+        .collect();
+
+    let main_images: Vec<_> = image_objects
+        .iter()
+        .filter(|(id, _)| !mask_ids.contains(id))
+        .collect();
+
+    let total_images = main_images.len();
+    let mut processed_count = 0;
+
+    for (object_id, smask_id) in main_images {
         if processed_ids.contains(&object_id) {
             continue;
         }
 
-        let (is_image, smask_id) = {
-            if let Some(Object::Stream(stream)) = doc.objects.get(&object_id) {
-                if let Ok(subtype) = stream.dict.get(b"Subtype") {
-                    if let Ok(name) = subtype.as_name() {
-                        if name == b"Image" {
-                            let smask = match stream.dict.get(b"SMask") {
-                                Ok(Object::Reference(id)) => Some(*id),
-                                _ => None,
-                            };
-                            (true, smask)
-                        } else {
-                            (false, None)
-                        }
-                    } else {
-                        (false, None)
-                    }
-                } else {
-                    (false, None)
-                }
-            } else {
-                (false, None)
-            }
-        };
+        if let Some(sid) = smask_id {
+            processed_ids.insert(sid);
+        }
 
-        if is_image {
-            if let Some(sid) = smask_id {
-                processed_ids.insert(sid);
-            }
+        if let Err(_e) = process_image_object(&mut doc, object_id, quality, max_dim, false, 0) {
+            // web_sys::console::error_1(&format!("Failed to process image {}: {:?}", object_id.0, e).into());
+        }
+        processed_ids.insert(object_id);
+        processed_count += 1;
 
-            if let Err(e) = process_image_object(&mut doc, object_id, quality, max_dim, false, 0) {
-                // web_sys::console::error_1(&format!("Failed to process image {}: {:?}", object_id.0, e).into());
-            }
-            processed_ids.insert(object_id);
+        // Call progress hook
+        if let Some(ref callback) = on_progress {
+            let this = JsValue::NULL;
+            let current_idx = JsValue::from(processed_count);
+            let total = JsValue::from(total_images as u32);
+            let _ = callback.call2(&this, &current_idx, &total);
         }
     }
 
