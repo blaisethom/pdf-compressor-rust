@@ -2,6 +2,8 @@
 
 A high-performance PDF compression tool written in Rust. It reduces file size by downsampling and re-encoding images, with support for transparent images (SMask).
 
+**Try it out:** You can test the compression for free and privately (client-side) at [privatepdfcompressor.com](https://privatepdfcompressor.com).
+
 ## Features
 
 - **High Compression:** Significantly reduces PDF size by re-encoding images to JPEG.
@@ -159,7 +161,13 @@ To use this library in a JavaScript project (Node.js, React, Vue, etc.):
     ```javascript
     import * as wasm from "pdf-compressor-rust";
 
-    // Usage: compress_pdf(pdf_bytes, quality, max_dimension)
+    // Usage: compress_pdf(pdf_bytes, quality, max_dimension, [optional_callback])
     // Returns a Uint8Array of the compressed PDF
-    const result = wasm.compress_pdf(myPdfUint8Array, 50, 1500);
+
+    // Optional: Progress callback (index, total_images)
+    const onProgress = (idx, total) => {
+        console.log(`Processed ${idx}/${total}`);
+    };
+
+    const result = wasm.compress_pdf(myPdfUint8Array, 50, 1500, onProgress);
     ```
