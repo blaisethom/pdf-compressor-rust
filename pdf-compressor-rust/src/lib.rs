@@ -7,7 +7,7 @@ use lopdf::{Document, Object, Stream};
 use std::io::Write;
 use wasm_bindgen::prelude::*;
 
-fn decompress_stream(stream: &Stream, object_id: u32) -> Result<Vec<u8>> {
+fn decompress_stream(stream: &Stream) -> Result<Vec<u8>> {
     match stream.decompressed_content() {
         Ok(c) => Ok(c),
         Err(e) => {
@@ -15,7 +15,6 @@ fn decompress_stream(stream: &Stream, object_id: u32) -> Result<Vec<u8>> {
             if let Some(Object::Name(name)) = filter.as_ref() {
                 if name == b"FlateDecode" {
                     use std::io::Read;
-                    // println!("Image {}: Attempting manual FlateDecode fallback...", object_id);
                     let mut decoder = flate2::read::ZlibDecoder::new(&stream.content[..]);
                     let mut buffer = Vec::new();
                     decoder
@@ -129,7 +128,7 @@ pub fn process_image_object(
     }
 
     // Extract the stream and decode it
-    let (width, height, components, content, color_space_name) = {
+    let (width, height, components, content) = {
         let stream = match doc.objects.get_mut(&object_id) {
             Some(Object::Stream(s)) => s,
             _ => return Err(anyhow!("Object not a stream")),
@@ -161,7 +160,7 @@ pub fn process_image_object(
                 }
             }
         } else {
-            decompress_stream(stream, object_id.0)?
+            decompress_stream(stream)?
         };
 
         let dict = &stream.dict;
@@ -196,7 +195,7 @@ pub fn process_image_object(
             } // Default
         };
 
-        (w, h, c, content, cs)
+        (w, h, c, content)
     };
 
     // Decode image to DynamicImage
@@ -263,7 +262,7 @@ pub fn process_image_object(
                 _ => return Err(anyhow!("SMask not a stream")),
             };
             let content =
-                decompress_stream(stream, smask_id.0).context("Failed to decompress mask")?;
+                decompress_stream(stream).context("Failed to decompress mask")?;
             let dict = &stream.dict;
             let w = dict.get(b"Width").and_then(|o| o.as_i64()).unwrap_or(0) as u32;
             let h = dict.get(b"Height").and_then(|o| o.as_i64()).unwrap_or(0) as u32;
@@ -320,17 +319,29 @@ pub fn process_image_object(
     // Re-encode
     if let Some(smask_id) = smask_id {
         actions.push("re-encode: Split RGB(JPEG) + Alpha(Flate)".to_string());
-        // Has transparency. Split into RGB (JPEG) and Alpha (Flate)
+        // Has transparency. Split into RGB (JPEG) and Alpha (Flate).
+        //
+        // The source image often stores arbitrary (often black) RGB values where
+        // alpha == 0. JPEG is lossy and bleeds color across sharp transitions, so
+        // those transparent-region colors leak into the semi-transparent edge
+        // pixels and show up as black halos in some PDF viewers. To fix this,
+        // pre-composite the RGB against a white matte: newRGB = alpha*RGB +
+        // (1-alpha)*white. We then emit a `Matte` entry on the SMask so compliant
+        // viewers un-premultiply and composite correctly on any background.
         let rgba = img.to_rgba8();
 
-        // Extract RGB and Alpha channels
+        let matte: [u8; 3] = [255, 255, 255];
+
         let mut rgb_pixels = Vec::with_capacity((w * h * 3) as usize);
         let mut alpha_pixels = Vec::with_capacity((w * h) as usize);
 
         for pixel in rgba.pixels() {
-            rgb_pixels.push(pixel[0]);
-            rgb_pixels.push(pixel[1]);
-            rgb_pixels.push(pixel[2]);
+            let a = pixel[3] as u32;
+            let inv_a = 255 - a;
+            for c in 0..3 {
+                let pre = (pixel[c] as u32 * a + matte[c] as u32 * inv_a + 127) / 255;
+                rgb_pixels.push(pre.min(255) as u8);
+            }
             alpha_pixels.push(pixel[3]);
         }
 
@@ -379,7 +390,15 @@ pub fn process_image_object(
             stream.dict.remove(b"DecodeParms");
             // Ensure no Decode array is messing things up, or force default [0, 1]
             stream.dict.remove(b"Decode");
-            // stream.dict.remove(b"Length"); // Remove length so it is recalculated
+            // Declare white matte so compliant viewers un-premultiply correctly.
+            stream.dict.set(
+                "Matte",
+                Object::Array(vec![
+                    Object::Real(1.0),
+                    Object::Real(1.0),
+                    Object::Real(1.0),
+                ]),
+            );
             stream.dict.set("Length", Object::Integer(mask_len as i64));
         }
     } else {
@@ -424,10 +443,6 @@ pub fn compress_pdf(
     max_dim: u32,
     on_progress: Option<js_sys::Function>,
 ) -> Result<Vec<u8>, JsError> {
-    // Initialize console_error_panic_hook for better error messages in browser console
-    #[cfg(feature = "console_error_panic_hook")]
-    console_error_panic_hook::set_once();
-
     let mut doc = Document::load_from(std::io::Cursor::new(input))
         .map_err(|e| JsError::new(&format!("Failed to load PDF: {:?}", e)))?;
 
@@ -477,11 +492,12 @@ pub fn compress_pdf(
     let mut processed_count = 0;
 
     for (object_id, smask_id) in main_images {
+        let object_id = *object_id;
         if processed_ids.contains(&object_id) {
             continue;
         }
 
-        if let Some(sid) = smask_id {
+        if let Some(sid) = *smask_id {
             processed_ids.insert(sid);
         }
 
