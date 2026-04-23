@@ -3,9 +3,41 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::ColorType;
 use image::{DynamicImage, GenericImageView};
-use lopdf::{Document, Object, Stream};
+use lopdf::{Document, Object, ObjectId, Stream};
+use std::collections::HashMap;
 use std::io::Write;
 use wasm_bindgen::prelude::*;
+
+/// Duplicate any SMask that is referenced by more than one image, so each
+/// image can be processed independently without corrupting a shared mask.
+/// The first referrer keeps the original; subsequent referrers get a fresh
+/// clone and have their /SMask reference rewritten to point at it.
+pub fn duplicate_shared_smasks(
+    doc: &mut Document,
+    image_smasks: &[(ObjectId, Option<ObjectId>)],
+) {
+    let mut refs: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for (img_id, smask) in image_smasks {
+        if let Some(sm) = smask {
+            refs.entry(*sm).or_default().push(*img_id);
+        }
+    }
+    for (smask_id, users) in refs {
+        if users.len() <= 1 {
+            continue;
+        }
+        for &img_id in users.iter().skip(1) {
+            let cloned = match doc.objects.get(&smask_id) {
+                Some(obj) => obj.clone(),
+                None => continue,
+            };
+            let new_id = doc.add_object(cloned);
+            if let Some(Object::Stream(stream)) = doc.objects.get_mut(&img_id) {
+                stream.dict.set("SMask", Object::Reference(new_id));
+            }
+        }
+    }
+}
 
 fn decompress_stream(stream: &Stream) -> Result<Vec<u8>> {
     match stream.decompressed_content() {
@@ -473,6 +505,20 @@ pub fn compress_pdf(
                     }
                 }
             }
+        }
+    }
+
+    // Give each image its own SMask clone so shared masks can't be corrupted
+    // by processing in sequence. This rewrites /SMask refs on the image dicts.
+    duplicate_shared_smasks(&mut doc, &image_objects);
+
+    // Re-read SMask ids (they may have been rewritten by duplicate_shared_smasks).
+    for entry in image_objects.iter_mut() {
+        if let Some(Object::Stream(stream)) = doc.objects.get(&entry.0) {
+            entry.1 = match stream.dict.get(b"SMask") {
+                Ok(Object::Reference(id)) => Some(*id),
+                _ => None,
+            };
         }
     }
 

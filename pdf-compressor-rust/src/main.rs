@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::Parser;
 use lopdf::{Document, Object};
-use pdf_compressor_rust::process_image_object;
+use pdf_compressor_rust::{duplicate_shared_smasks, process_image_object};
 
 /// Simple PDF compressor
 #[derive(Parser, Debug)]
@@ -62,6 +62,26 @@ fn main() -> Result<()> {
 
     // Iterate over all objects to find XObject streams with Subtype = Image
     let object_ids: Vec<_> = doc.objects.keys().cloned().collect();
+
+    // Give each image its own SMask clone so shared masks can't be corrupted
+    // by processing in sequence.
+    {
+        let mut image_smasks = Vec::new();
+        for object_id in &object_ids {
+            if let Some(Object::Stream(stream)) = doc.objects.get(object_id) {
+                if let Ok(subtype) = stream.dict.get(b"Subtype") {
+                    if subtype.as_name().map(|n| n == b"Image").unwrap_or(false) {
+                        let smask = match stream.dict.get(b"SMask") {
+                            Ok(Object::Reference(id)) => Some(*id),
+                            _ => None,
+                        };
+                        image_smasks.push((*object_id, smask));
+                    }
+                }
+            }
+        }
+        duplicate_shared_smasks(&mut doc, &image_smasks);
+    }
 
     // First pass: Count total images to process
     let mut total_images = 0;
